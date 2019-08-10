@@ -24,7 +24,7 @@ def get_unique_styles():
             FROM 
             TB_STYLES
             WHERE 
-            TB_STYLES.BRAND = 'MSR'
+            TB_STYLES.BRAND = 'LA SPORTIVA'
             ;"""
     unique_styles = pd.read_sql(sql2, cnxn)
     unique_styles = unique_styles['style_id'].values.tolist()
@@ -34,7 +34,6 @@ def get_unique_styles():
 def run_style_audit(style):
     cnxn = pyodbc.connect(con_string)
     cursor = cnxn.cursor()
-    print('run SP')
     params = (100, style, 1)
     sql = '''EXEC [dbo].[SP_STYLE_AUDIT] @IMACHINE=?, @ISTYLE=?, @VSTORE=?'''
     cursor.execute(sql, params)
@@ -44,7 +43,6 @@ def run_style_audit(style):
     time.sleep(.5)
 
     cnxn = pyodbc.connect(con_string)
-    print('fetch results')
     sql2 = """SET NOCOUNT ON;
         select 
         *
@@ -59,7 +57,6 @@ def run_style_audit(style):
 def get_qoh(sku_bucket_id):
     cnxn = pyodbc.connect(con_string)
     cursor = cnxn.cursor()
-    print('connected')
     sql = f'''select tb_sku_buckets.qoh, TB_SKU_LOOKUPS.LOOKUP as upc
         from tb_sku_buckets
         INNER JOIN TB_SKU_LOOKUPS on TB_SKU_LOOKUPS.SKU_ID = TB_SKU_BUCKETS.SKU_ID
@@ -83,8 +80,8 @@ def add_quantities(df_just_quantity, qoh):  # add qoh arguement to determine end
     max_date = max(df_just_quantity['DTE'])
     new_row_min = pd.DataFrame({'DTE': min_date - timedelta(1), 'QTY': 0}, index=[0])
     new_row_max = pd.DataFrame({'DTE': max_date + timedelta(1), 'QTY': (qoh * -1)}, index=[0])
-    df_just_quantity = pd.concat([new_row_min, df_just_quantity]).reset_index(drop=True)
-    df_just_quantity = pd.concat([new_row_max, df_just_quantity]).reset_index(drop=True)
+    df_just_quantity = pd.concat([new_row_min, df_just_quantity], sort=True).reset_index(drop=True)
+    df_just_quantity = pd.concat([new_row_max, df_just_quantity], sort=True).reset_index(drop=True)
     df_just_quantity = df_just_quantity.set_index(pd.to_datetime(df_just_quantity['DTE']))
     df_resample = pd.DataFrame()
     df_resample['QTY'] = df_just_quantity.QTY.resample('D').sum()
@@ -111,7 +108,6 @@ def insert_to_pgdb(full_totals):
     port = cfg.pg_server['port']
     engine = create_engine(f'postgresql://{user}:{password}@{host}:{port}/{database}', echo=False)
     full_totals.to_sql(name='inventory', con=engine, if_exists='append', index=True)
-    print('insert successful')
 
 
 ## do work
@@ -121,7 +117,6 @@ style_list = get_unique_styles()
 for style in tqdm(style_list):
     audit_results = run_style_audit(style)
     full_totals = get_totals_for_style(audit_results)
-    print('inserting into pg')
     if full_totals is not None:
         insert_to_pgdb(full_totals)
     else:
