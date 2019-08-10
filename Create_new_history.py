@@ -1,31 +1,49 @@
 import pyodbc
+import time
 from datetime import timedelta
 
 import pandas as pd
+from sqlalchemy import create_engine
+from tqdm import tqdm
 
-from config import server
+import config as cfg
 
-driver = server['driver']
-server = server['server']
-database = server['database']
-uid = server['uid']
-pwd = server['pwd']
+driver = cfg.mssql_server['driver']
+server = cfg.mssql_server['server']
+database = cfg.mssql_server['database']
+uid = cfg.mssql_server['uid']
+pwd = cfg.mssql_server['pwd']
 con_string = f'DRIVER={driver};SERVER={server};UID={uid};PWD={pwd};DATABASE={database};'
 
-print(con_string)
 
+def get_unique_styles():
+    cnxn = pyodbc.connect(con_string)
+    sql2 = """SET NOCOUNT ON;
+            SELECT
+            TB_STYLES.style_id
+            FROM 
+            TB_STYLES
+            WHERE 
+            TB_STYLES.BRAND = 'MSR'
+            ;"""
+    unique_styles = pd.read_sql(sql2, cnxn)
+    unique_styles = unique_styles['style_id'].values.tolist()
+    cnxn.close()
+    return unique_styles
 
 def run_style_audit(style):
     cnxn = pyodbc.connect(con_string)
     cursor = cnxn.cursor()
     print('run SP')
     params = (100, style, 1)
-
     sql = '''EXEC [dbo].[SP_STYLE_AUDIT] @IMACHINE=?, @ISTYLE=?, @VSTORE=?'''
     cursor.execute(sql, params)
     cursor.commit()
-    cnxn = pyodbc.connect(con_string)
+    cnxn.close()
 
+    time.sleep(.5)
+
+    cnxn = pyodbc.connect(con_string)
     print('fetch results')
     sql2 = """SET NOCOUNT ON;
         select 
@@ -36,9 +54,7 @@ def run_style_audit(style):
         ;"""
     df_data = pd.read_sql(sql2, cnxn)
     cnxn.close()
-
     return df_data
-
 
 def get_qoh(sku_bucket_id):
     cnxn = pyodbc.connect(con_string)
@@ -52,7 +68,7 @@ def get_qoh(sku_bucket_id):
     response = cursor.execute(sql)
     for row in response:
         qoh = row.qoh
-        upc = row.upc
+        upc = row.upc.strip()
         return qoh, upc
 
 
@@ -84,9 +100,29 @@ def get_totals_for_style(style):
         quantity = add_quantities(style, qoh)
         quantity['upc'] = upc
         quantity['store'] = 1
-        print(quantity)
+        return quantity
 
 
-style = 126596
-audit_results = run_style_audit(style)
-get_totals_for_style(audit_results)
+def insert_to_pgdb(full_totals):
+    user = cfg.pg_server['user']
+    password = cfg.pg_server['password']
+    host = cfg.pg_server['host']
+    database = cfg.pg_server['dbname']
+    port = cfg.pg_server['port']
+    engine = create_engine(f'postgresql://{user}:{password}@{host}:{port}/{database}', echo=False)
+    full_totals.to_sql(name='inventory', con=engine, if_exists='append', index=True)
+    print('insert successful')
+
+
+## do work
+
+
+style_list = get_unique_styles()
+for style in tqdm(style_list):
+    audit_results = run_style_audit(style)
+    full_totals = get_totals_for_style(audit_results)
+    print('inserting into pg')
+    if full_totals is not None:
+        insert_to_pgdb(full_totals)
+    else:
+        continue
